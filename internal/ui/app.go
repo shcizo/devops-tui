@@ -42,6 +42,7 @@ type App struct {
 	helpPanel      components.HelpPanel
 	stateModal     components.StateModal
 	branchModal    components.BranchModal
+	assignModal    components.AssignModal
 
 	// State
 	activePanel Panel
@@ -55,6 +56,7 @@ type App struct {
 	areas        []models.Area
 	workItems    []models.WorkItem
 	statesByType map[string][]models.WorkItemStateInfo
+	teamMembers  []models.TeamMember
 
 	// Services
 	client *api.Client
@@ -84,6 +86,7 @@ func NewApp(client *api.Client) App {
 		helpPanel:      components.NewHelpPanel(keys, styles),
 		stateModal:     components.NewStateModal(styles, keys),
 		branchModal:    components.NewBranchModal(styles, keys),
+		assignModal:    components.NewAssignModal(styles, keys),
 		activePanel:    PanelWorkItems,
 		viewMode:       ViewMain,
 		loading:        true,
@@ -124,6 +127,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.branchModal.IsVisible() {
 			newModal, cmd := a.branchModal.Update(msg)
 			a.branchModal = newModal
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return a, tea.Batch(cmds...)
+		}
+
+		if a.assignModal.IsVisible() {
+			newModal, cmd := a.assignModal.Update(msg)
+			a.assignModal = newModal
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
@@ -195,6 +207,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Open assign modal (only when work items panel is active)
+		if key.Matches(msg, a.keys.Assign) && a.activePanel == PanelWorkItems {
+			if item := a.workItemsPanel.SelectedItem(); item != nil {
+				a.assignModal.SetItem(item)
+				a.assignModal.SetMembers(a.teamMembers)
+				a.assignModal.SetSize(a.width, a.height)
+				a.assignModal.SetVisible(true)
+				return a, nil
+			}
+		}
+
 		// Update active panel
 		switch a.activePanel {
 		case PanelFilter:
@@ -215,6 +238,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.iterations = msg.iterations
 		a.areas = msg.areas
 		a.statesByType = msg.statesByType
+		a.teamMembers = msg.teamMembers
 		a.stateModal.SetStatesByType(a.statesByType)
 		filterState := models.NewFilterState(a.iterations, a.areas, a.statesByType)
 
@@ -268,6 +292,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Modal was closed, nothing special to do
 		a.stateModal.SetVisible(false)
 		a.branchModal.SetVisible(false)
+		a.assignModal.SetVisible(false)
 
 	case components.StateChangeRequestMsg:
 		a.stateModal.SetVisible(false)
@@ -289,6 +314,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case components.BranchCreateErrorMsg:
 		a.err = msg.Err
+
+	case components.AssignRequestMsg:
+		a.assignModal.SetVisible(false)
+		a.loading = true
+		return a, assignWorkItemCmd(a.client, msg.Item.ID, msg.UserEmail, msg.UserName, a.filterPanel.FilterState())
+
+	case assignedMsg:
+		a.loading = false
+		a.statusMsg = fmt.Sprintf("Assigned to %s", msg.userName)
+		// Refresh work items to show updated assignment
+		return a, loadWorkItemsCmd(a.client, a.filterPanel.FilterState())
 	}
 
 	// Update selected item in details panel
@@ -311,6 +347,11 @@ func (a App) View() string {
 	// Render branch modal if visible
 	if a.branchModal.IsVisible() {
 		return a.branchModal.View()
+	}
+
+	// Render assign modal if visible
+	if a.assignModal.IsVisible() {
+		return a.assignModal.View()
 	}
 
 	// Render help overlay if visible
@@ -455,6 +496,7 @@ type dataLoadedMsg struct {
 	iterations   []models.Iteration
 	areas        []models.Area
 	statesByType map[string][]models.WorkItemStateInfo
+	teamMembers  []models.TeamMember
 }
 
 type workItemsLoadedMsg struct {
@@ -467,6 +509,10 @@ type errMsg struct {
 
 type stateChangedMsg struct {
 	newState string
+}
+
+type assignedMsg struct {
+	userName string
 }
 
 // Commands
@@ -486,7 +532,12 @@ func loadDataCmd(client *api.Client) tea.Cmd {
 			// Non-fatal - we can still work with hardcoded states
 			statesByType = make(map[string][]models.WorkItemStateInfo)
 		}
-		return dataLoadedMsg{iterations: iterations, areas: areas, statesByType: statesByType}
+		teamMembers, err := client.GetTeamMembers()
+		if err != nil {
+			// Non-fatal - we can still work without team members
+			teamMembers = []models.TeamMember{}
+		}
+		return dataLoadedMsg{iterations: iterations, areas: areas, statesByType: statesByType, teamMembers: teamMembers}
 	}
 }
 
@@ -528,5 +579,15 @@ func createBranchCmd(branchName string) tea.Cmd {
 			return components.BranchCreateErrorMsg{Err: err}
 		}
 		return components.BranchCreatedMsg{BranchName: branchName}
+	}
+}
+
+func assignWorkItemCmd(client *api.Client, itemID int, userEmail, userName string, filterState *models.FilterState) tea.Cmd {
+	return func() tea.Msg {
+		err := client.AssignWorkItem(itemID, userEmail)
+		if err != nil {
+			return errMsg{err: err}
+		}
+		return assignedMsg{userName: userName}
 	}
 }

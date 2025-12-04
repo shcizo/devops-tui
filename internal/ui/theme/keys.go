@@ -25,6 +25,12 @@ type KeyMap struct {
 	Quit         key.Binding
 	ChangeState  key.Binding
 	CreateBranch key.Binding
+	Assign       key.Binding
+
+	// Sorting
+	SortByID    key.Binding
+	SortByState key.Binding
+	SortByType  key.Binding
 }
 
 // DefaultKeyMap returns the default key bindings
@@ -102,6 +108,22 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("b"),
 			key.WithHelp("b", "create branch"),
 		),
+		Assign: key.NewBinding(
+			key.WithKeys("a"),
+			key.WithHelp("a", "assign"),
+		),
+		SortByID: key.NewBinding(
+			key.WithKeys("1"),
+			key.WithHelp("1", "sort by ID"),
+		),
+		SortByType: key.NewBinding(
+			key.WithKeys("2"),
+			key.WithHelp("2", "sort by type"),
+		),
+		SortByState: key.NewBinding(
+			key.WithKeys("3"),
+			key.WithHelp("3", "sort by state"),
+		),
 	}
 }
 
@@ -122,7 +144,8 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		{k.Up, k.Down, k.Top, k.Bottom},
 		{k.NextPanel, k.PrevPanel},
 		{k.Select, k.Open, k.View},
-		{k.ChangeState, k.CreateBranch},
+		{k.ChangeState, k.CreateBranch, k.Assign},
+		{k.SortByID, k.SortByType, k.SortByState},
 		{k.Search, k.Refresh},
 		{k.Help, k.Back, k.Quit},
 	}

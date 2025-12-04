@@ -167,7 +167,58 @@ func (c *Client) GetWorkItems(ids []string) ([]models.WorkItem, error) {
 		}
 	}
 
+	// Fetch parent titles
+	c.populateParentTitles(allItems)
+
 	return allItems, nil
+}
+
+// populateParentTitles fetches titles for all parent work items
+func (c *Client) populateParentTitles(items []models.WorkItem) {
+	// Collect unique parent IDs
+	parentIDs := make(map[int]bool)
+	for _, item := range items {
+		if item.ParentID > 0 {
+			parentIDs[item.ParentID] = true
+		}
+	}
+
+	if len(parentIDs) == 0 {
+		return
+	}
+
+	// Convert to string slice
+	ids := make([]string, 0, len(parentIDs))
+	for id := range parentIDs {
+		ids = append(ids, fmt.Sprintf("%d", id))
+	}
+
+	// Fetch parent work items (only need ID and Title)
+	endpoint := fmt.Sprintf("/wit/workitems?ids=%s&fields=System.Id,System.Title", strings.Join(ids, ","))
+	resp, err := c.get(endpoint)
+	if err != nil {
+		return // Silently fail - parent titles are optional
+	}
+
+	var apiResp workItemsResponse
+	if err := decode(resp, &apiResp); err != nil {
+		return
+	}
+
+	// Build ID -> Title map
+	titleMap := make(map[int]string)
+	for _, item := range apiResp.Value {
+		titleMap[item.ID] = item.Fields.Title
+	}
+
+	// Update items with parent titles
+	for i := range items {
+		if items[i].ParentID > 0 {
+			if title, ok := titleMap[items[i].ParentID]; ok {
+				items[i].ParentTitle = title
+			}
+		}
+	}
 }
 
 // GetWorkItem fetches a single work item by ID
@@ -186,6 +237,19 @@ func (c *Client) GetWorkItem(id int) (*models.WorkItem, error) {
 	}
 
 	wi := c.convertWorkItem(item)
+
+	// Fetch parent title if parent exists
+	if wi.ParentID > 0 {
+		parentEndpoint := fmt.Sprintf("/wit/workitems/%d?fields=System.Title", wi.ParentID)
+		parentResp, err := c.get(parentEndpoint)
+		if err == nil {
+			var parentItem workItemAPIItem
+			if decode(parentResp, &parentItem) == nil {
+				wi.ParentTitle = parentItem.Fields.Title
+			}
+		}
+	}
+
 	return &wi, nil
 }
 
@@ -234,6 +298,33 @@ func (c *Client) UpdateWorkItemState(id int, newState string) error {
 			"op":    "add",
 			"path":  "/fields/System.State",
 			"value": newState,
+		},
+	}
+
+	bodyBytes, err := json.Marshal(patchDoc)
+	if err != nil {
+		return fmt.Errorf("marshaling patch document: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("/wit/workitems/%d", id)
+	resp, err := c.patch(endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+
+	return nil
+}
+
+// AssignWorkItem assigns a work item to a user
+// Pass empty string to unassign
+func (c *Client) AssignWorkItem(id int, userEmail string) error {
+	// Azure DevOps uses JSON Patch format
+	patchDoc := []map[string]interface{}{
+		{
+			"op":    "add",
+			"path":  "/fields/System.AssignedTo",
+			"value": userEmail,
 		},
 	}
 

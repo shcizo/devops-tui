@@ -2,6 +2,7 @@ package components
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -9,6 +10,23 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/samuelenocsson/devops-tui/internal/models"
 	"github.com/samuelenocsson/devops-tui/internal/ui/theme"
+)
+
+// SortField represents the field to sort by
+type SortField int
+
+const (
+	SortByID SortField = iota
+	SortByState
+	SortByType
+)
+
+// SortDirection represents the sort direction
+type SortDirection int
+
+const (
+	SortAsc SortDirection = iota
+	SortDesc
 )
 
 // Column definitions
@@ -21,15 +39,17 @@ type column struct {
 
 // WorkItemsPanel is the work items list component
 type WorkItemsPanel struct {
-	items   []models.WorkItem
-	cursor  int
-	styles  theme.Styles
-	keys    theme.KeyMap
-	width   int
-	height  int
-	focused bool
-	offset  int // For scrolling
-	columns []column
+	items     []models.WorkItem
+	cursor    int
+	styles    theme.Styles
+	keys      theme.KeyMap
+	width     int
+	height    int
+	focused   bool
+	offset    int // For scrolling
+	columns   []column
+	sortField SortField
+	sortDir   SortDirection
 }
 
 // NewWorkItemsPanel creates a new work items panel
@@ -78,6 +98,12 @@ func (w WorkItemsPanel) Update(msg tea.Msg) (WorkItemsPanel, tea.Cmd) {
 			if w.SelectedItem() != nil {
 				return w, func() tea.Msg { return ViewWorkItemMsg{Item: *w.SelectedItem()} }
 			}
+		case key.Matches(msg, w.keys.SortByID):
+			w.toggleSort(SortByID)
+		case key.Matches(msg, w.keys.SortByState):
+			w.toggleSort(SortByState)
+		case key.Matches(msg, w.keys.SortByType):
+			w.toggleSort(SortByType)
 		}
 	}
 
@@ -172,14 +198,37 @@ func (w *WorkItemsPanel) renderHeader(colWidths []int) string {
 		Bold(true).
 		Foreground(lipgloss.Color("#9CA3AF"))
 
+	sortedStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#7C3AED"))
+
 	var parts []string
 	for i, col := range w.columns {
 		width := colWidths[i]
 		title := col.title
+
+		// Add sort indicator
+		isSorted := (col.title == "ID" && w.sortField == SortByID) ||
+			(col.title == "STATE" && w.sortField == SortByState) ||
+			(col.title == "TYPE" && w.sortField == SortByType)
+
+		if isSorted {
+			arrow := "▲"
+			if w.sortDir == SortDesc {
+				arrow = "▼"
+			}
+			title = title + arrow
+		}
+
 		if len(title) > width {
 			title = title[:width]
 		}
-		parts = append(parts, headerStyle.Width(width).Render(title))
+
+		if isSorted {
+			parts = append(parts, sortedStyle.Width(width).Render(title))
+		} else {
+			parts = append(parts, headerStyle.Width(width).Render(title))
+		}
 	}
 
 	return "  " + strings.Join(parts, "  ")
@@ -305,6 +354,46 @@ func (w *WorkItemsPanel) moveToBottom() {
 	}
 }
 
+func (w *WorkItemsPanel) toggleSort(field SortField) {
+	if w.sortField == field {
+		// Toggle direction if same field
+		if w.sortDir == SortAsc {
+			w.sortDir = SortDesc
+		} else {
+			w.sortDir = SortAsc
+		}
+	} else {
+		w.sortField = field
+		w.sortDir = SortAsc
+	}
+	w.sortItems()
+}
+
+func (w *WorkItemsPanel) sortItems() {
+	if len(w.items) == 0 {
+		return
+	}
+
+	sort.SliceStable(w.items, func(i, j int) bool {
+		var less bool
+		switch w.sortField {
+		case SortByID:
+			less = w.items[i].ID < w.items[j].ID
+		case SortByState:
+			less = string(w.items[i].State) < string(w.items[j].State)
+		case SortByType:
+			less = string(w.items[i].Type) < string(w.items[j].Type)
+		default:
+			less = w.items[i].ID < w.items[j].ID
+		}
+
+		if w.sortDir == SortDesc {
+			return !less
+		}
+		return less
+	})
+}
+
 // SetSize sets the size of the work items panel
 func (w *WorkItemsPanel) SetSize(width, height int) {
 	w.width = width
@@ -330,13 +419,30 @@ func (w *WorkItemsPanel) SetFocused(focused bool) {
 
 // SetItems sets the work items
 func (w *WorkItemsPanel) SetItems(items []models.WorkItem) {
+	// Remember currently selected item ID
+	var selectedID int
+	if w.cursor >= 0 && w.cursor < len(w.items) {
+		selectedID = w.items[w.cursor].ID
+	}
+
 	oldLen := len(w.items)
 	w.items = items
+
+	// Re-apply current sort
+	w.sortItems()
 
 	// Only reset position if this is new data (not just a refresh)
 	if oldLen == 0 && len(items) > 0 {
 		w.cursor = 0
 		w.offset = 0
+	} else if selectedID > 0 {
+		// Try to restore cursor to previously selected item
+		for i, item := range w.items {
+			if item.ID == selectedID {
+				w.cursor = i
+				break
+			}
+		}
 	}
 
 	// Clamp cursor to valid range
@@ -345,6 +451,15 @@ func (w *WorkItemsPanel) SetItems(items []models.WorkItem) {
 	}
 	if w.cursor < 0 {
 		w.cursor = 0
+	}
+
+	// Adjust offset to keep cursor visible
+	visible := w.visibleItemCount()
+	if w.cursor < w.offset {
+		w.offset = w.cursor
+	}
+	if w.cursor >= w.offset+visible {
+		w.offset = w.cursor - visible + 1
 	}
 }
 
