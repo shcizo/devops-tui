@@ -11,7 +11,10 @@ import (
 	"github.com/samuelenocsson/devops-tui/internal/config"
 )
 
-const apiVersion = "7.1"
+const (
+	apiVersion        = "7.1"
+	apiVersionPreview = "7.1-preview"
+)
 
 // Client is the Azure DevOps API client
 type Client struct {
@@ -27,8 +30,16 @@ type Client struct {
 
 // NewClient creates a new Azure DevOps API client
 func NewClient(cfg *config.Config) *Client {
-	// Azure DevOps uses Basic auth with empty username and PAT as password
-	auth := base64.StdEncoding.EncodeToString([]byte(":" + cfg.PAT))
+	var authHeader string
+
+	if cfg.IsPAT() {
+		// Azure DevOps uses Basic auth with empty username and PAT as password
+		auth := base64.StdEncoding.EncodeToString([]byte(":" + cfg.PAT))
+		authHeader = "Basic " + auth
+	} else {
+		// OAuth uses Bearer token
+		authHeader = "Bearer " + cfg.GetToken()
+	}
 
 	return &Client{
 		httpClient: &http.Client{
@@ -37,7 +48,35 @@ func NewClient(cfg *config.Config) *Client {
 		baseURL:      cfg.BaseURL(),
 		teamURL:      cfg.TeamURL(),
 		webURL:       cfg.WebURL(),
-		authHeader:   "Basic " + auth,
+		authHeader:   authHeader,
+		organization: cfg.Organization,
+		project:      cfg.Project,
+		team:         cfg.Team,
+	}
+}
+
+// NewClientWithToken creates a new Azure DevOps API client with a specific token
+// isPAT indicates whether the token is a Personal Access Token or an OAuth token
+func NewClientWithToken(cfg *config.Config, token string, isPAT bool) *Client {
+	var authHeader string
+
+	if isPAT {
+		// Azure DevOps uses Basic auth with empty username and PAT as password
+		auth := base64.StdEncoding.EncodeToString([]byte(":" + token))
+		authHeader = "Basic " + auth
+	} else {
+		// OAuth uses Bearer token
+		authHeader = "Bearer " + token
+	}
+
+	return &Client{
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+		baseURL:      cfg.BaseURL(),
+		teamURL:      cfg.TeamURL(),
+		webURL:       cfg.WebURL(),
+		authHeader:   authHeader,
 		organization: cfg.Organization,
 		project:      cfg.Project,
 		team:         cfg.Team,
@@ -85,6 +124,16 @@ func (c *Client) getTeam(endpoint string) (*http.Response, error) {
 
 // getWithBase performs a GET request with a specific base URL
 func (c *Client) getWithBase(baseURL, endpoint string) (*http.Response, error) {
+	return c.getWithBaseAndVersion(baseURL, endpoint, apiVersion)
+}
+
+// getPreview performs a GET request using preview API version
+func (c *Client) getPreview(endpoint string) (*http.Response, error) {
+	return c.getWithBaseAndVersion(c.baseURL, endpoint, apiVersionPreview)
+}
+
+// getWithBaseAndVersion performs a GET request with a specific base URL and API version
+func (c *Client) getWithBaseAndVersion(baseURL, endpoint, version string) (*http.Response, error) {
 	url := fmt.Sprintf("%s%s", baseURL, endpoint)
 	if endpoint[0] != '/' {
 		url = fmt.Sprintf("%s/%s", baseURL, endpoint)
@@ -101,7 +150,7 @@ func (c *Client) getWithBase(baseURL, endpoint string) (*http.Response, error) {
 				}
 			}
 		}
-		url = fmt.Sprintf("%s%sapi-version=%s", url, separator, apiVersion)
+		url = fmt.Sprintf("%s%sapi-version=%s", url, separator, version)
 	}
 
 	return c.doRequest("GET", url, nil)
